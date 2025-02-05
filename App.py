@@ -1,8 +1,6 @@
 import streamlit as st
 import os
-import httpx
 from langchain_ollama import ChatOllama
-from langchain.llms import HuggingFaceHub  # Fallback
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import (
     SystemMessagePromptTemplate,
@@ -10,32 +8,17 @@ from langchain_core.prompts import (
     AIMessagePromptTemplate,
     ChatPromptTemplate,
 )
+from transformers import pipeline
+from langchain_groq import ChatGroq # type: ignore
 
-# Check if running locally or on Streamlit Cloud
-if "STREAMLIT_CLOUD" in os.environ:
-    BASE_URL = "http://your-cloud-vm-ip:11434"  # Change to your remote Ollama server
-else:
-    BASE_URL = "http://localhost:11434"
+# Define Ollama server URL
+OLLAMA_SERVER = os.getenv("OLLAMA_SERVER", "http://localhost:11434")
+USE_OLLAMA = os.getenv("USE_OLLAMA", "true").lower() == "true"
+USE_GROQ = os.getenv("USE_GROQ", "false").lower() == "true"
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "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")
 
-# Initialize the model
-try:
-    llm_engine = ChatOllama(model="deepseek-r1:1.5b", base_url=BASE_URL, temperature=0.3)
-except httpx.ConnectError:
-    st.error("⚠️ Unable to connect to Ollama. Using Hugging Face as a fallback.")
-    llm_engine = HuggingFaceHub(repo_id="meta-llama/Llama-2-7b-chat-hf", model_kwargs={"temperature": 0.3})
-
-# Custom CSS styling
-st.markdown(
-    """
-    <style>
-        .main { background-color: #1a1a1a; color: #ffffff; }
-        .sidebar .sidebar-content { background-color: #2d2d2d; }
-        .stTextInput textarea { color: #ffffff !important; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
+# Streamlit UI setup
+st.set_page_config(page_title="DeepSeek DevMind AI", layout="wide")
 st.title("🧠 DeepSeek DevMind AI-powered Coding Assistant")
 st.caption("🚀 Your AI Pair Programmer With Debugging Superpowers")
 
@@ -45,63 +28,72 @@ with st.sidebar:
     selected_model = st.selectbox("Choose Model", ["deepseek-r1:1.5b", "deepseek-r1:7b", "deepseek-r1:3b"], index=0)
     st.divider()
     st.markdown("### Model Capabilities")
-    st.markdown("- 🐍 Python Expert\n- 🐞 Debugging Assistant\n- 📝 Code Documentation\n- 💡 Solution Design")
+    st.markdown("""
+    - 🐍 Python Expert
+    - 🐞 Debugging Assistant
+    - 📝 Code Documentation
+    - 💡 Solution Design
+    """)
     st.divider()
     st.sidebar.markdown("Built with [Ollama](https://ollama.ai/) | [LangChain](https://python.langchain.com/)")
 
+# Initialize the model
+llm_engine = None
+if USE_OLLAMA:
+    try:
+        llm_engine = ChatOllama(model=selected_model, base_url=OLLAMA_SERVER, temperature=0.3)
+    except Exception as e:
+        st.error("⚠️ Failed to connect to Ollama. Switching to backup AI.")
+        USE_OLLAMA = False
+
+if not USE_OLLAMA and USE_GROQ:
+    llm_engine = ChatGroq(api_key=GROQ_API_KEY, model_name="mixtral-8x7b")
+    st.info("Using Groq AI as fallback.")
+
+if not llm_engine:
+    llm_engine = pipeline("text-generation", model="bigscience/bloom-560m")
+    st.info("Using Hugging Face model as fallback.")
+
 # System Prompt Configuration
 system_prompt = SystemMessagePromptTemplate.from_template(
-    """You are an expert AI coding assistant. Provide concise, correct solutions with strategic print statements and debugging tips. Always respond in English."""
+    """You are an expert AI coding Assistant. Provide concise, correct solutions with strategic print statements and debugging tips."""
 )
 
 # Session state management
 if "message_log" not in st.session_state:
-    st.session_state.message_log = [
-        {"role": "ai", "content": "Hi! I'm DeepSeek. How can I help you code today? 💻"}
-    ]
-
-# Chat Container
-chat_container = st.container()
+    st.session_state.message_log = [{"role": "ai", "content": "Hi! I'm DeepSeek. How Can I help You Code Today? 💻"}]
 
 # Display chat messages
+chat_container = st.container()
 with chat_container:
     for message in st.session_state.message_log:
         with st.chat_message(message["role"]):
             st.write(message["content"])
 
-# Chat input
-user_query = st.chat_input("Type your coding question here...")
-
+# Function to generate AI response
 def generate_ai_response(prompt_chain):
-    try:
-        processing_pipeline = prompt_chain | llm_engine | StrOutputParser()
-        return processing_pipeline.invoke({"input": user_query})
-    except Exception as e:
-        return f"⚠️ Error generating response: {str(e)}"
+    processing_pipeline = prompt_chain | llm_engine | StrOutputParser()
+    return processing_pipeline.invoke({})
 
+# Function to build prompt sequence
 def build_prompt_chain():
     prompt_sequence = [system_prompt]
-    for msg in st.session_state.message_log:
+    for msg in st.session_state.message_log[-20:]:  # Keep only last 20 messages
         if msg["role"] == "user":
             prompt_sequence.append(HumanMessagePromptTemplate.from_template(msg["content"]))
         elif msg["role"] == "ai":
             prompt_sequence.append(AIMessagePromptTemplate.from_template(msg["content"]))
     return ChatPromptTemplate.from_messages(prompt_sequence)
 
+# User Input Handling
+user_query = st.chat_input("Type your coding question here...")
 if user_query:
-    # Add user message to log
     st.session_state.message_log.append({"role": "user", "content": user_query})
-    
-    # Generate AI response
     with st.spinner("🧠 Processing..."):
-        prompt_chain = build_prompt_chain()
-        ai_response = generate_ai_response(prompt_chain)
-    
-    # Add AI response to log
+        try:
+            prompt_chain = build_prompt_chain()
+            ai_response = generate_ai_response(prompt_chain)
+        except Exception as e:
+            ai_response = "⚠️ Error processing your request. Please try again."
     st.session_state.message_log.append({"role": "ai", "content": ai_response})
-    
-    # Limit message history to prevent memory overload
-    st.session_state.message_log = st.session_state.message_log[-20:]
-    
-    # Rerun to update chat display
     st.rerun()
