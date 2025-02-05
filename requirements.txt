@@ -1,4 +1,13 @@
 streamlit
+langchain
 langchain_core
 langchain_community
+ollama
 langchain_ollama
+python-dotenv
+httpx
+transformers
+torch
+accelerate
+groq
+langchain_groq
